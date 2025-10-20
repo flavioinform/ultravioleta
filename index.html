@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Catástrofe Ultravioleta – VR</title>
+  <style>
+    html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,Segoe UI,Roboto,Arial}
+    #hud{
+      position:fixed; left:16px; top:16px; z-index:10; color:#fff;
+      background:rgba(0,0,0,.55); padding:10px 12px; border-radius:10px; backdrop-filter:blur(6px);
+      max-width:min(92vw,420px); font-size:14px; line-height:1.4
+    }
+    #hud b{color:#86a8ff}
+    #legend{display:flex; gap:12px; margin-top:6px; font-size:12px; color:#ddd; flex-wrap:wrap}
+    .dot{width:12px; height:12px; border-radius:50%; display:inline-block; margin-right:6px}
+    .btn{display:inline-block; margin-top:8px; padding:8px 10px; border-radius:8px; cursor:pointer; background:#1b1f3a; color:#fff; border:1px solid #2a3a8f}
+    .small{font-size:12px; color:#b7c2ff}
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <b>Catástrofe Ultravioleta – VR</b><br/>
+    Mira el <i>cuerpo negro</i> que emite fotones y el gráfico con dos curvas:
+    <div id="legend">
+      <span><span class="dot" style="background:#ff3b3b"></span>Rayleigh-Jeans (clásica)</span>
+      <span><span class="dot" style="background:#3b93ff"></span>Ley de Planck (cuántica)</span>
+    </div>
+    <div class="small">Pulsa “Enter VR”. Con el cursor (gaze) toca la esfera para más fotones.</div>
+    <span id="togglePhotons" class="btn">💡 Fotones: ON</span>
+  </div>
+
+  <!-- Three.js + WebXR helpers -->
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.152.2/examples/js/VRButton.js"></script>
+  <script src="https://unpkg.com/three@0.152.2/examples/jsm/controls/OrbitControls.js"></script>
+
+  <script>
+  let scene, camera, renderer, controls;
+  let bodySphere, photonsGroup, emitPhotons = true;
+  let graphGroup;
+
+  init(); animate();
+
+  function init(){
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+
+    camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 1000);
+    camera.position.set(0,1.6,3);
+
+    renderer = new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    // OrbitControls (solo fuera de VR)
+    controls = new THREE.OrbitControls(camera, renderer.domElement);
+    controls.target.set(0, 1.2, 0);
+
+    // Luces
+    scene.add(new THREE.AmbientLight(0x444444));
+    const p1 = new THREE.PointLight(0x667eea, 2, 20); p1.position.set(4,3,2); scene.add(p1);
+    const p2 = new THREE.PointLight(0xf5576c, 1.5, 20); p2.position.set(-4,2,-3); scene.add(p2);
+
+    // Piso sutil
+    const floor = new THREE.Mesh(
+      new THREE.CircleGeometry(20, 64),
+      new THREE.MeshPhongMaterial({color:0x0a0e1a, shininess:10, side:THREE.DoubleSide})
+    );
+    floor.rotation.x = -Math.PI/2; floor.position.y = 0;
+    scene.add(floor);
+
+    // Esfera "cuerpo negro"
+    const sMat = new THREE.MeshPhysicalMaterial({
+      color:0x111111, roughness:0.6, metalness:0.1, emissive:0x220000, emissiveIntensity:0.35
+    });
+    bodySphere = new THREE.Mesh(new THREE.SphereGeometry(0.4, 48, 48), sMat);
+    bodySphere.position.set(-0.9, 1.2, 0);
+    bodySphere.userData.hot = 0;
+    scene.add(bodySphere);
+
+    // Grupo de fotones
+    photonsGroup = new THREE.Group();
+    scene.add(photonsGroup);
+
+    // Gráfico 3D (Rayleigh-Jeans vs Planck)
+    graphGroup = createGraph();
+    graphGroup.position.set(1.1, 1.0, 0);
+    scene.add(graphGroup);
+
+    // Interacción simple: “tocar” la esfera con gaze en VR o click en desktop
+    renderer.domElement.addEventListener('click', () => burstPhotons());
+    renderer.xr.addEventListener('sessionstart', () => controls.enabled = false);
+    renderer.xr.addEventListener('sessionend', () => controls.enabled = true);
+
+    // Botón HUD
+    document.getElementById('togglePhotons').onclick = () => {
+      emitPhotons = !emitPhotons;
+      document.getElementById('togglePhotons').textContent = '💡 Fotones: ' + (emitPhotons ? 'ON' : 'OFF');
+    };
+
+    window.addEventListener('resize', onResize);
+  }
+
+  function onResize(){
+    camera.aspect = innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  }
+
+  // Crea el gráfico con ejes + dos curvas
+  function createGraph(){
+    const group = new THREE.Group();
+
+    // Ejes
+    const axes = new THREE.Group();
+    const axisMat = new THREE.LineBasicMaterial({color:0x6b7cff});
+    const makeAxis = (points) => new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), axisMat);
+    // X: longitud de onda (nm, normalizada)
+    axes.add(makeAxis([new THREE.Vector3(0,0,0), new THREE.Vector3(2.2,0,0)]));
+    // Y: intensidad
+    axes.add(makeAxis([new THREE.Vector3(0,0,0), new THREE.Vector3(0,1.5,0)]));
+    group.add(axes);
+
+    // Curva Rayleigh-Jeans (clásica): ~ 1/λ^4 (diverge en UV, λ→0)
+    const rjMat = new THREE.LineBasicMaterial({ color: 0xff3b3b, linewidth: 2, transparent:true });
+    const rjGeom = new THREE.BufferGeometry();
+    const rjPts = [];
+    for (let i=1; i<=220; i++){
+      const x = i/100;          // 0.01 .. 2.2 (λ normalizada)
+      const y = Math.min(1.5, 0.02 / Math.pow(x, 1.7)); // forma “divergente” controlada
+      rjPts.push(new THREE.Vector3(x, y, 0));
+    }
+    rjGeom.setFromPoints(rjPts);
+    group.add(new THREE.Line(rjGeom, rjMat));
+
+    // Curva de Planck (cuántica): pico y caída en UV
+    const plMat = new THREE.LineBasicMaterial({ color: 0x3b93ff, linewidth: 2, transparent:true });
+    const plGeom = new THREE.BufferGeometry();
+    const plPts = [];
+    // Modelo cualitativo tipo Bλ: (c1/λ^5)/(exp(c2/λ)-1), escalado/normalizado
+    for (let i=1; i<=220; i++){
+      const x = i/100;       // λ normalizada
+      const c2 = 2.2;        // “temperatura” visual
+      const val = (1/Math.pow(x, 2)) / (Math.exp(c2/x)-1); // forma cualitativa
+      const y = THREE.MathUtils.clamp(val*0.9, 0, 1.4);
+      plPts.push(new THREE.Vector3(x, y, 0.001));
+    }
+    plGeom.setFromPoints(plPts);
+    group.add(new THREE.Line(plGeom, plMat));
+
+    // Rejilla suave
+    const grid = new THREE.GridHelper(2.2, 11, 0x223, 0x112);
+    grid.rotation.x = Math.PI/2;
+    grid.position.y = -0.001;
+    group.add(grid);
+
+    return group;
+  }
+
+  function animate(){
+    renderer.setAnimationLoop(step);
+  }
+
+  function step(t){
+    const dt = 0.016;
+
+    // Emisión fotones continua
+    if (emitPhotons && Math.random() < 0.6) spawnPhoton();
+
+    // Animar fotones
+    for (let i = photonsGroup.children.length-1; i >= 0; i--){
+      const p = photonsGroup.children[i];
+      p.position.add(p.userData.vel);
+      p.material.opacity *= 0.985;
+      p.scale.multiplyScalar(1.01);
+      if (p.material.opacity < 0.02 || p.position.length() > 20){
+        photonsGroup.remove(p); p.geometry.dispose(); p.material.dispose();
+      }
+    }
+
+    // “Calentar” esfera al emitir ráfagas
+    if (bodySphere.userData.hot > 0){
+      bodySphere.userData.hot -= dt*0.3;
+      const e = 0.35 + bodySphere.userData.hot*0.8;
+      bodySphere.material.emissive.setHex(0x220000);
+      bodySphere.material.emissiveIntensity = e;
+      bodySphere.scale.setScalar(1 + 0.05*bodySphere.userData.hot);
+    }
+
+    // Giro sutil del gráfico
+    graphGroup.rotation.y = Math.sin(t*0.0003)*0.1;
+
+    if (!renderer.xr.isPresenting) controls.update();
+    renderer.render(scene, camera);
+  }
+
+  function spawnPhoton(){
+    const g = new THREE.SphereGeometry(0.015, 12, 12);
+    const m = new THREE.MeshBasicMaterial({color: 0xffee88, transparent:true, opacity:0.95});
+    const p = new THREE.Mesh(g, m);
+
+    // Nace en la superficie de la esfera "cuerpo negro"
+    const n = new THREE.Vector3().randomDirection();
+    p.position.copy(bodySphere.position).add(n.multiplyScalar(0.42));
+
+    // Velocidad radial + pequeña componente azulada al “UV”
+    const v = p.position.clone().sub(bodySphere.position).normalize();
+    p.userData.vel = v.multiplyScalar(0.04 + Math.random()*0.04)
+                      .add(new THREE.Vector3(0, 0.02*Math.random(), 0));
+    photonsGroup.add(p);
+  }
+
+  function burstPhotons(){
+    bodySphere.userData.hot = Math.min(1, bodySphere.userData.hot + 0.6);
+    for (let i=0;i<40;i++) spawnPhoton();
+  }
+  </script>
+</body>
+</html>
